@@ -5,6 +5,9 @@ from .serializers import UserRegisterSerializer, UserProfileSerializer, Category
 from .models import Category, Product, Cart, CartItem, Order, OrderItem
 from rest_framework.response import Response
 from rest_framework.decorators import action
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from django.core.cache import cache
 
 User = get_user_model()
 
@@ -34,10 +37,58 @@ class CategoryViewSet(viewsets.ModelViewSet):
     serializer_class = CategorySerializer
     permission_classes = [IsAdminOrReadOnly]
 
+    def list(self, request, *args, **kwargs):
+        cached = cache.get('categories_list')
+        if cached:
+            return Response(cached)
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        cache.set('categories_list', serializer.data, timeout=3600)
+        return Response(serializer.data)
+
+    def perform_create(self, serializer):
+        result = serializer.save()
+        cache.delete('categories_list')
+        return result
+
+    def perform_update(self, serializer):
+        result = serializer.save()
+        cache.delete('categories_list')
+        return result
+
+    def perform_destroy(self, instance):
+        result = super().perform_destroy(instance)
+        cache.delete('categories_list')
+        return result
+
 class ProductViewSet(viewsets.ModelViewSet):
-    queryset = Product.objects.all()
+    queryset = Product.objects.select_related('category').all()
     serializer_class = ProductSerializer
     permission_classes = [IsAdminOrReadOnly]
+
+    def list(self, request, *args, **kwargs):
+        cached = cache.get('products_list')
+        if cached:
+            return Response(cached)
+        queryset = self.get_queryset().select_related('category')
+        serializer = self.get_serializer(queryset, many=True)
+        cache.set('products_list', serializer.data, timeout=3600)
+        return Response(serializer.data)
+
+    def perform_create(self, serializer):
+        result = serializer.save()
+        cache.delete('products_list')
+        return result
+
+    def perform_update(self, serializer):
+        result = serializer.save()
+        cache.delete('products_list')
+        return result
+
+    def perform_destroy(self, instance):
+        result = super().perform_destroy(instance)
+        cache.delete('products_list')
+        return result
 
 class CartViewSet(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -56,10 +107,18 @@ class CartViewSet(viewsets.ViewSet):
             product = Product.objects.get(id=product_id)
         except Product.DoesNotExist:
             return Response({'error': 'Product not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Get or create cart item
         cart_item, created = CartItem.objects.get_or_create(cart=cart, product=product)
-        cart_item.quantity += quantity
+        current_quantity = 0 if created else cart_item.quantity
+        new_quantity = current_quantity + quantity
+        max_addable = product.stock - current_quantity
+
+        if quantity > max_addable:
+            return Response({'error': f'Cannot add {quantity} units. Only {max_addable} left in stock.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        cart_item.quantity = new_quantity
         cart_item.save()
-        return Response({'success': 'Product added to cart'})
+        return Response({'success': f'Added {quantity} unit(s) of {product.name} to cart. Total in cart: {cart_item.quantity}'})
 
     @action(detail=False, methods=['post'])
     def remove(self, request):
@@ -118,4 +177,14 @@ class OrderViewSet(viewsets.ViewSet):
             return Response({'error': 'Invalid status'}, status=status.HTTP_400_BAD_REQUEST)
         order.status = status_value
         order.save()
+        # Send WebSocket notification
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f'order_status_{order.user.id}',
+            {
+                'type': 'order_status_update',
+                'order_id': order.id,
+                'status': order.status,
+            }
+        )
         return Response({'success': 'Order status updated'})

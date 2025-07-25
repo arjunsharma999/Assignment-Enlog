@@ -74,24 +74,10 @@ function App() {
   return (
     <>
       <div>
-        <h2>Welcome! You are logged in as {role}.</h2>
+        <h2>Welcome, {profile?.username}!</h2>
         <button onClick={handleLogout}>Logout</button>
-        {profile && (
-          <div style={{marginTop: 20}}>
-            <h3>User Details</h3>
-            <ul>
-              <li><b>Username:</b> {profile.username}</li>
-              <li><b>Email:</b> {profile.email}</li>
-              <li><b>First Name:</b> {profile.first_name}</li>
-              <li><b>Last Name:</b> {profile.last_name}</li>
-              <li><b>Address:</b> {profile.address}</li>
-              <li><b>Phone:</b> {profile.phone}</li>
-              <li><b>Admin:</b> {profile.is_staff ? 'Yes' : 'No'}</li>
-            </ul>
-          </div>
-        )}
+        {role === 'client' && profile && <ClientDashboard userId={profile.id} />}
         {role === 'admin' && <AdminDashboard />}
-        {role === 'client' && <ClientDashboard />}
       </div>
     </>
   )
